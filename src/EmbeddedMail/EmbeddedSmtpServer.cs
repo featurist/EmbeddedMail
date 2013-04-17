@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Mail;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace EmbeddedMail
@@ -17,7 +19,10 @@ namespace EmbeddedMail
     public class EmbeddedSmtpServer : ISmtpServer
     {
         private readonly IList<MailMessage> _messages = new List<MailMessage>();
-        private bool _closed;
+        private readonly ConcurrentBag<SmtpSession> _sessions = new ConcurrentBag<SmtpSession>();
+
+        private bool _stopped;
+
         public EmbeddedSmtpServer(int port = 25)
             : this(IPAddress.Any, port)
         {
@@ -43,48 +48,58 @@ namespace EmbeddedMail
         public void Start()
         {
             Listener.Start();
+            _stopped = false;
             SmtpLog.Info(string.Format("Server started at {0}", new IPEndPoint(Address, Port)));
-            ListenForClients();
+            ListenForClients(OnClientConnect, e => SmtpLog.Error("Listener socket is closed", e));
         }
 
         public void Stop()
         {
-            _closed = true;
+            Dispose();
         }
 
-        public void ListenForClients()
-        {
-            if (_closed) return;
-            ListenForClients(OnClientConnect, e => SmtpLog.Error("Listener socket is closed", e));
-        }
+        public void ListenForClients(Action<ISocket> callback, Action<Exception> error) {
+            Listener.BeginAcceptSocket(ar => {
+                if (_stopped)
+                    return;
+                SmtpLog.Info("accepted socket");
+                ListenForClients(callback, error);
+                Socket socket = Listener.EndAcceptSocket(ar);
 
-        public Task<ISocket> ListenForClients(Action<ISocket> callback, Action<Exception> error)
-        {
-            Func<IAsyncResult, ISocket> end = r => new SocketWrapper(Listener.EndAcceptSocket(r));
-            var task = Task.Factory.FromAsync(Listener.BeginAcceptSocket, end, null);
-            task.ContinueWith(t => callback(t.Result), TaskContinuationOptions.NotOnFaulted)
-                .ContinueWith(t => error(t.Exception), TaskContinuationOptions.OnlyOnFaulted);
-            task.ContinueWith(t => error(t.Exception), TaskContinuationOptions.OnlyOnFaulted);
-            return task;
+                try {
+                    callback(new SocketWrapper(socket));
+                } catch (ThreadAbortException e) {
+                    // ignore this one, we're just shutting down
+                    SmtpLog.Debug("killing session thread");
+                } catch (Exception e) {
+                    error(e);
+                }
+
+                SmtpLog.Info("finished with socket");
+            }, null);
         }
 
         public void OnClientConnect(ISocket clientSocket)
         {
             SmtpLog.Info("Client connected");
-            ListenForClients();
 
             var session = new SmtpSession(clientSocket)
             {
                 OnMessage = (msg) => _messages.Add(msg)
             };
+            _sessions.Add(session);
             session.Start();
         }
 
         public void Dispose()
         {
-            Stop();
-            // I don't grok the disposal lifecycle for the sockets yet
+            SmtpLog.Info("stopping listener");
+            _stopped = true;
             Listener.Stop();
+            foreach (var session in _sessions) {
+                session.Dispose();
+            }
+            SmtpLog.Info("stopped listener");
         }
     }
 }

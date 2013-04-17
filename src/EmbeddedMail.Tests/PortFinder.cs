@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Net;
 using System.Net.Sockets;
-using FubuCore;
 
 namespace EmbeddedMail.Tests
 {
@@ -19,23 +18,16 @@ namespace EmbeddedMail.Tests
 
         private static bool tryPort(int port)
         {
-            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP);
-            var endpoint = new IPEndPoint(IPAddress.Any, port);
+            using (var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.IP)) {
+                var endpoint = new IPEndPoint(IPAddress.Any, port);
 
-            try
-            {
-                socket.Bind(endpoint);
-                return true;
+                try {
+                    socket.Bind(endpoint);
+                    return true;
+                } catch (Exception) {
+                    return false;
+                }
             }
-            catch (Exception)
-            {
-                return false;
-            }
-            finally
-            {
-                socket.SafeDispose();
-            }
-
         }
     }
 }

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Mail;
+using System.Threading;
 using EmbeddedMail.Handlers;
 
 namespace EmbeddedMail
@@ -22,7 +23,8 @@ namespace EmbeddedMail
         private StreamWriter _writer;
         private StreamReader _reader;
         private readonly IList<MailMessage> _messages = new List<MailMessage>();
-        private readonly IList<string> _recipients = new List<string>(); 
+        private readonly IList<string> _recipients = new List<string>();
+        private Thread _thread;
 
         public SmtpSession(ISocket socket)
         {
@@ -36,31 +38,35 @@ namespace EmbeddedMail
         {
             if (!_socket.Connected) return;
 
+            _thread = Thread.CurrentThread;
+
             _reader = new StreamReader(_socket.Stream);
-            _writer = new StreamWriter(_socket.Stream) { AutoFlush = true };
-            
-            _writer.WriteLine("220 localhost Server Ready");
+            _writer = new StreamWriter(_socket.Stream) {AutoFlush = true};
+
+            WriteResponse("220 localhost Server Ready");
             var isMessageBody = false;
-            while(_socket.Connected)
-            {
+            while (_socket.Connected) {
                 var token = SmtpToken.FromLine(_reader.ReadLine(), isMessageBody);
-                
+
                 SmtpLog.Debug(token.Data);
 
                 var handler = ProtocolHandlers.HandlerFor(token);
-                if(handler.Handle(token, this) == ContinueProcessing.Stop)
-                {
+                if (handler.Handle(token, this) == ContinueProcessing.Stop) {
                     break;
                 }
 
                 isMessageBody = token.IsData && token.IsMessageBody;
             }
+            SmtpLog.Debug("finished listening");
         }
 
         public void Dispose()
         {
+            SmtpLog.Debug("disposing SMTP session");
+            WriteResponse("421 localhost Service not available, closing transmission channel");
             _writer.Close();
             _reader.Close();
+            _thread.Abort();
         }
 
         public IEnumerable<string> Recipients
